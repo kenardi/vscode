@@ -62,6 +62,7 @@ steps:
       targetPath: $(SNAP_PATH)
       artifactName: vscode_client_linux_$(VSCODE_ARCH)_snap
       sbomBuildDropPath: $(SNAP_EXTRACTED_PATH)
+      sbomBuildComponentPath: $(SNAP_EXTRACTED_PATH)
       sbomPackageName: "VS Code Linux $(VSCODE_ARCH) SNAP"
       sbomPackageVersion: $(Build.SourceVersion)
     displayName: Publish snap package
