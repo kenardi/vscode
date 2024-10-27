@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
-import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { AuthenticationSession, IAuthenticationService } from '../../../services/authentication/common/authentication.js';
@@ -34,9 +34,8 @@ class ChatInstallEntitlementContribution extends Disposable implements IWorkbenc
 	private static readonly CHAT_EXTENSION_INSTALLED_KEY = 'chat.extensionInstalled';
 
 	private readonly chatInstallEntitledContextKey = CONTEXT_CHAT_INSTALL_ENTITLED.bindTo(this.contextService);
-	private readonly listeners = this._register(new DisposableStore());
 
-	private didResolveEntitlement = false;
+	private resolvedEntitlement: boolean | undefined = undefined;
 
 	constructor(
 		@IContextKeyService private readonly contextService: IContextKeyService,
@@ -54,54 +53,53 @@ class ChatInstallEntitlementContribution extends Disposable implements IWorkbenc
 			return;
 		}
 
-		this.init();
+		this.checkExtensionInstallation();
+		this.registerListeners();
 	}
 
-	private async init(): Promise<void> {
+	private async checkExtensionInstallation(): Promise<void> {
 		const extensions = await this.extensionManagementService.getInstalled();
 
 		const installed = extensions.find(value => ExtensionIdentifier.equals(value.identifier.id, this.productService.gitHubEntitlement?.extensionId));
-		if (!installed) {
-			this.registerListeners();
-		} else {
-			this.disableEntitlement(true);
-		}
+		this.updateExtensionInstalled(installed ? true : false);
 	}
 
 	private registerListeners(): void {
-		this.listeners.add(this.extensionService.onDidChangeExtensions(result => {
+		this._register(this.extensionService.onDidChangeExtensions(result => {
+			for (const extension of result.removed) {
+				if (ExtensionIdentifier.equals(this.productService.gitHubEntitlement?.extensionId, extension.identifier)) {
+					this.updateExtensionInstalled(false);
+					break;
+				}
+			}
+
 			for (const extension of result.added) {
 				if (ExtensionIdentifier.equals(this.productService.gitHubEntitlement?.extensionId, extension.identifier)) {
-					this.disableEntitlement(true);
-					return;
+					this.updateExtensionInstalled(true);
+					break;
 				}
 			}
 		}));
 
-		this.listeners.add(this.authenticationService.onDidChangeSessions(async e => {
-			if (e.providerId === this.productService.gitHubEntitlement?.providerId && e.event.added?.length) {
-				await this.resolveEntitlement(e.event.added[0]);
-			} else if (e.providerId === this.productService.gitHubEntitlement?.providerId && e.event.removed?.length) {
-				this.disableEntitlement(false);
+		this._register(this.authenticationService.onDidChangeSessions(async e => {
+			if (e.providerId === this.productService.gitHubEntitlement?.providerId) {
+				if (e.event.added?.length) {
+					this.resolveEntitlement(e.event.added[0]);
+				} else if (e.event.removed?.length) {
+					this.chatInstallEntitledContextKey.set(false);
+				}
 			}
 		}));
 
-		this.listeners.add(this.authenticationService.onDidRegisterAuthenticationProvider(async e => {
+		this._register(this.authenticationService.onDidRegisterAuthenticationProvider(async e => {
 			if (e.id === this.productService.gitHubEntitlement?.providerId) {
 				this.resolveEntitlement((await this.authenticationService.getSessions(e.id))[0]);
 			}
 		}));
 	}
 
-	private async resolveEntitlement(session: AuthenticationSession | undefined) {
+	private async resolveEntitlement(session: AuthenticationSession | undefined): Promise<void> {
 		if (!session) {
-			return;
-		}
-
-		const installedExtensions = await this.extensionManagementService.getInstalled();
-		const installed = installedExtensions.find(value => ExtensionIdentifier.equals(value.identifier.id, this.productService.gitHubEntitlement?.extensionId));
-		if (installed) {
-			this.disableEntitlement(true);
 			return;
 		}
 
@@ -110,8 +108,8 @@ class ChatInstallEntitlementContribution extends Disposable implements IWorkbenc
 	}
 
 	private async doResolveEntitlement(session: AuthenticationSession): Promise<boolean> {
-		if (this.didResolveEntitlement) {
-			return false;
+		if (typeof this.resolvedEntitlement === 'boolean') {
+			return this.resolvedEntitlement;
 		}
 
 		const cts = new CancellationTokenSource();
@@ -141,20 +139,14 @@ class ChatInstallEntitlementContribution extends Disposable implements IWorkbenc
 			return false; //ignore
 		}
 
-		this.didResolveEntitlement = true;
+		this.resolvedEntitlement = Boolean(parsedResult[this.productService.gitHubEntitlement!.enablementKey]);
+		this.telemetryService.publicLog2<ChatInstallEntitlementEnablementEvent, ChatInstallEntitlementEnablementClassification>('chatInstallEntitlement', { entitled: this.resolvedEntitlement });
 
-		const entitled = Boolean(parsedResult[this.productService.gitHubEntitlement!.enablementKey]);
-		this.telemetryService.publicLog2<ChatInstallEntitlementEnablementEvent, ChatInstallEntitlementEnablementClassification>('chatInstallEntitlement', { entitled });
-
-		return entitled;
+		return this.resolvedEntitlement;
 	}
 
-	private disableEntitlement(isExtensionInstalled: boolean): void {
-		if (isExtensionInstalled) {
-			this.storageService.store(ChatInstallEntitlementContribution.CHAT_EXTENSION_INSTALLED_KEY, true, StorageScope.PROFILE, StorageTarget.MACHINE);
-		}
-		this.chatInstallEntitledContextKey.set(false);
-		this.listeners.dispose();
+	private updateExtensionInstalled(isExtensionInstalled: boolean): void {
+		this.storageService.store(ChatInstallEntitlementContribution.CHAT_EXTENSION_INSTALLED_KEY, isExtensionInstalled, StorageScope.PROFILE, StorageTarget.MACHINE);
 	}
 }
 

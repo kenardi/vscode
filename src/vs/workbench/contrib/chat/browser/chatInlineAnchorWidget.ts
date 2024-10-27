@@ -31,6 +31,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { ITextResourceEditorInput } from '../../../../platform/editor/common/editor.js';
 import { FileKind, IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -39,7 +40,7 @@ import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { fillEditorsDragData } from '../../../browser/dnd.js';
 import { ResourceContextKey } from '../../../common/contextkeys.js';
-import { OPEN_TO_SIDE_COMMAND_ID } from '../../files/browser/fileConstants.js';
+import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { ExplorerFolderContext } from '../../files/common/files.js';
 import { IWorkspaceSymbol } from '../../search/common/search.js';
 import { IChatContentInlineReference } from '../common/chatService.js';
@@ -83,6 +84,8 @@ export class InlineAnchorWidget extends Disposable {
 		@ITelemetryService telemetryService: ITelemetryService,
 	) {
 		super();
+
+		// TODO: Make sure we handle updates from an inlineReference being `resolved` late
 
 		this.data = 'uri' in inlineReference.inlineReference
 			? inlineReference.inlineReference
@@ -152,10 +155,6 @@ export class InlineAnchorWidget extends Disposable {
 			contextMenuId = MenuId.ChatInlineResourceAnchorContext;
 			contextMenuArg = location.uri;
 
-			const resourceContextKey = this._register(new ResourceContextKey(contextKeyService, fileService, languageService, modelService));
-			resourceContextKey.set(location.uri);
-			this._chatResourceContext.set(location.uri.toString());
-
 			const label = labelService.getUriBasenameLabel(location.uri);
 			iconText = location.range && this.data.kind !== 'symbol' ?
 				`${label}#${location.range.startLineNumber}-${location.range.endLineNumber}` :
@@ -184,12 +183,16 @@ export class InlineAnchorWidget extends Disposable {
 			}));
 		}
 
+		const resourceContextKey = this._register(new ResourceContextKey(contextKeyService, fileService, languageService, modelService));
+		resourceContextKey.set(location.uri);
+		this._chatResourceContext.set(location.uri.toString());
+
 		const iconEl = dom.$('span.icon');
 		iconEl.classList.add(...iconClasses);
 		element.replaceChildren(iconEl, dom.$('span.icon-label', {}, iconText));
 
-		const fragment = location.range ? `${location.range.startLineNumber}` : '';
-		element.setAttribute('data-href', location.uri.with({ fragment }).toString());
+		const fragment = location.range ? `${location.range.startLineNumber},${location.range.startColumn}` : '';
+		element.setAttribute('data-href', (fragment ? location.uri.with({ fragment }) : location.uri).toString());
 
 		// Context menu
 		this._register(dom.addDisposableListener(element, dom.EventType.CONTEXT_MENU, async domEvent => {
@@ -299,11 +302,14 @@ registerAction2(class CopyResourceAction extends Action2 {
 		const clipboardService = accessor.get(IClipboardService);
 
 		const anchor = chatWidgetService.lastFocusedAnchor;
-		if (!anchor || anchor.data.kind === 'symbol') {
+		if (!anchor) {
 			return;
 		}
 
-		clipboardService.writeResources([anchor.data.uri]);
+		// TODO: we should also write out the standard mime types so that external programs can use them
+		// like how `fillEditorsDragData` works but without having an event to work with.
+		const resource = anchor.data.kind === 'symbol' ? anchor.data.symbol.location.uri : anchor.data.uri;
+		clipboardService.writeResources([resource]);
 	}
 });
 
@@ -323,20 +329,36 @@ registerAction2(class OpenToSideResourceAction extends Action2 {
 				mac: {
 					primary: KeyMod.WinCtrl | KeyCode.Enter
 				},
-			}
+			},
+			menu: [{
+				id: MenuId.ChatInlineSymbolAnchorContext,
+				group: 'navigation',
+				order: 1
+			}]
 		});
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const chatWidgetService = accessor.get(IChatMarkdownAnchorService);
-		const commandService = accessor.get(ICommandService);
+		const editorService = accessor.get(IEditorService);
 
 		const anchor = chatWidgetService.lastFocusedAnchor;
-		if (!anchor || anchor.data.kind === 'symbol') {
+		if (!anchor) {
 			return;
 		}
 
-		commandService.executeCommand(OPEN_TO_SIDE_COMMAND_ID, anchor.data.uri);
+		const input: ITextResourceEditorInput = anchor.data.kind === 'symbol'
+			? {
+				resource: anchor.data.symbol.location.uri, options: {
+					selection: {
+						startColumn: anchor.data.symbol.location.range.startColumn,
+						startLineNumber: anchor.data.symbol.location.range.startLineNumber,
+					}
+				}
+			}
+			: { resource: anchor.data.uri };
+
+		await editorService.openEditors([input], SIDE_GROUP);
 	}
 });
 
@@ -357,10 +379,10 @@ registerAction2(class GoToDefinitionAction extends Action2 {
 			},
 			menu: [{
 				id: MenuId.ChatInlineSymbolAnchorContext,
-				group: 'navigation',
+				group: '4_symbol_nav',
 				order: 1.1,
 				when: EditorContextKeys.hasDefinitionProvider,
-			},]
+			}]
 		});
 	}
 
@@ -407,7 +429,7 @@ registerAction2(class GoToTypeDefinitionsAction extends Action2 {
 			},
 			menu: [{
 				id: MenuId.ChatInlineSymbolAnchorContext,
-				group: 'navigation',
+				group: '4_symbol_nav',
 				order: 1.1,
 				when: EditorContextKeys.hasTypeDefinitionProvider,
 			},]
@@ -432,7 +454,7 @@ registerAction2(class GoToImplementations extends Action2 {
 			},
 			menu: [{
 				id: MenuId.ChatInlineSymbolAnchorContext,
-				group: 'navigation',
+				group: '4_symbol_nav',
 				order: 1.2,
 				when: EditorContextKeys.hasImplementationProvider,
 			},]
@@ -457,7 +479,7 @@ registerAction2(class GoToReferencesAction extends Action2 {
 			},
 			menu: [{
 				id: MenuId.ChatInlineSymbolAnchorContext,
-				group: 'navigation',
+				group: '4_symbol_nav',
 				order: 1.3,
 				when: EditorContextKeys.hasReferenceProvider,
 			},]
@@ -465,7 +487,7 @@ registerAction2(class GoToReferencesAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor, location: Location): Promise<void> {
-		return runGoToCommand(accessor, 'editor.action.goToImplementation', location);
+		return runGoToCommand(accessor, 'editor.action.goToReferences', location);
 	}
 });
 

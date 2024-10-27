@@ -8,9 +8,8 @@ import { numberComparator } from '../../../../../../base/common/arrays.js';
 import { findFirstMin } from '../../../../../../base/common/arraysFind.js';
 import { createHotClass } from '../../../../../../base/common/hotReloadHelpers.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
-import { autorun, constObservable, derived, derivedDisposable, derivedWithCancellationToken, IObservable, observableFromEvent, ObservablePromise } from '../../../../../../base/common/observable.js';
+import { autorun, constObservable, derived, derivedDisposable, derivedOpts, derivedWithCancellationToken, IObservable, observableFromEvent, ObservablePromise } from '../../../../../../base/common/observable.js';
 import { getIndentationLength, splitLines } from '../../../../../../base/common/strings.js';
-import { MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { MenuId, MenuItemAction } from '../../../../../../platform/actions/common/actions.js';
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { ICodeEditor } from '../../../../../browser/editorBrowser.js';
@@ -35,9 +34,16 @@ import './inlineEditsView.css';
 import { IOriginalEditorInlineDiffViewState, OriginalEditorInlineDiffView } from './inlineDiffView.js';
 import { applyEditToModifiedRangeMappings, maxLeftInRange, Point, StatusBarViewItem, UniqueUriGenerator } from './utils.js';
 import { IInlineEditsIndicatorState, InlineEditsIndicator } from './inlineEditsIndicatorView.js';
-import { registerColor, transparent } from '../../../../../../platform/theme/common/colorUtils.js';
+import { darken, lighten, registerColor, transparent } from '../../../../../../platform/theme/common/colorUtils.js';
 import { diffInserted, diffRemoved } from '../../../../../../platform/theme/common/colorRegistry.js';
+import { CustomizedMenuWorkbenchToolBar } from '../../hintsWidget/inlineCompletionsHintsWidget.js';
+import { Command } from '../../../../../common/languages.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+import { structuralEquals } from '../../../../../../base/common/equals.js';
+import { IAction } from '../../../../../../base/common/actions.js';
 import { editorLineHighlightBorder } from '../../../../../common/core/editorColorRegistry.js';
+import { ActionViewItem } from '../../../../../../base/browser/ui/actionbar/actionViewItems.js';
+import { InlineCompletionsModel } from '../../model/inlineCompletionsModel.js';
 
 export class InlineEditsViewAndDiffProducer extends Disposable {
 	public static readonly hot = createHotClass(InlineEditsViewAndDiffProducer);
@@ -85,7 +91,7 @@ export class InlineEditsViewAndDiffProducer extends Disposable {
 			));
 			const diffEdits = new TextEdit(edits);
 
-			return new InlineEditWithChanges(text, diffEdits, inlineEdit.isCollapsed, true); //inlineEdit.showInlineIfPossible);
+			return new InlineEditWithChanges(text, diffEdits, inlineEdit.isCollapsed, true, inlineEdit.commands); //inlineEdit.showInlineIfPossible);
 		});
 	});
 
@@ -94,13 +100,14 @@ export class InlineEditsViewAndDiffProducer extends Disposable {
 	constructor(
 		private readonly _editor: ICodeEditor,
 		private readonly _edit: IObservable<InlineEdit | undefined>,
+		private readonly _model: IObservable<InlineCompletionsModel | undefined>,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IDiffProviderFactoryService private readonly _diffProviderFactoryService: IDiffProviderFactoryService,
 		@IModelService private readonly _modelService: IModelService,
 	) {
 		super();
 
-		this._register(new InlineEditsView(this._editor, this._inlineEdit, this._instantiationService));
+		this._register(this._instantiationService.createInstance(InlineEditsView, this._editor, this._inlineEdit, this._model));
 	}
 }
 
@@ -115,20 +122,34 @@ export class InlineEditWithChanges {
 		public readonly edit: TextEdit,
 		public readonly isCollapsed: boolean,
 		public readonly showInlineIfPossible: boolean,
+		public readonly commands: readonly Command[],
 	) {
 	}
 }
 
-export const originalBackgroundColor = registerColor('inlineEdit.originalBackground', transparent(diffRemoved, 0.4), '', true
+export const originalBackgroundColor = registerColor(
+	'inlineEdit.originalBackground',
+	transparent(diffRemoved, 0.4),
+	'',
+	true
 );
-
-export const modifiedBackgroundColor = registerColor('inlineEdit.modifiedBackground',
+export const modifiedBackgroundColor = registerColor(
+	'inlineEdit.modifiedBackground',
 	transparent(diffInserted, 0.4),
 	'',
 	true
 );
 
-export const border = registerColor('inlineEdit.border', editorLineHighlightBorder, '');
+export const border = registerColor(
+	'inlineEdit.border',
+	{
+		light: darken(editorLineHighlightBorder, 0.15),
+		dark: lighten(editorLineHighlightBorder, 0.50),
+		hcDark: editorLineHighlightBorder,
+		hcLight: editorLineHighlightBorder
+	},
+	''
+);
 
 export class InlineEditsView extends Disposable {
 	private readonly _editorObs = observableCodeEditor(this._editor);
@@ -139,7 +160,6 @@ export class InlineEditsView extends Disposable {
 			overflow: 'visible',
 			top: '0px',
 			left: '0px',
-			zIndex: '100', // over minimap
 		},
 	}, [
 		h('div.editorContainer@editorContainer', { style: { position: 'absolute' } }, [
@@ -154,7 +174,9 @@ export class InlineEditsView extends Disposable {
 	constructor(
 		private readonly _editor: ICodeEditor,
 		private readonly _edit: IObservable<InlineEditWithChanges | undefined>,
+		private readonly _model: IObservable<InlineCompletionsModel | undefined>,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 
@@ -275,7 +297,7 @@ export class InlineEditsView extends Disposable {
 		};
 	});
 
-	protected readonly _toolbar = this._register(this._instantiationService.createInstance(MenuWorkbenchToolBar, this._elements.toolbar, MenuId.InlineEditsActions, {
+	protected readonly _toolbar = this._register(this._instantiationService.createInstance(CustomizedMenuWorkbenchToolBar, this._elements.toolbar, MenuId.InlineEditsActions, {
 		menuOptions: { renderShortTitle: true },
 		toolbarOptions: {
 			primaryGroup: g => g.startsWith('primary'),
@@ -284,8 +306,44 @@ export class InlineEditsView extends Disposable {
 			if (action instanceof MenuItemAction) {
 				return this._instantiationService.createInstance(StatusBarViewItem, action, undefined);
 			}
+			if (action.class === undefined) {
+				return this._instantiationService.createInstance(ActionViewItem, {}, action, { icon: false });
+			}
 			return undefined;
 		},
+		telemetrySource: 'inlineEditsToolbar'
+	}));
+
+	private readonly _extraCommands = derivedOpts<readonly Command[]>({ owner: this, equalsFn: structuralEquals }, reader => {
+		return this._uiState.read(reader)?.edit.commands ?? [];
+	});
+
+	protected readonly _updateToolbarAutorun = this._register(autorun(reader => {
+		/** @description extra commands */
+		const extraCommands = this._extraCommands.read(reader);
+		const primaryExtraActions: IAction[] = [];
+		const secondaryExtraActions: IAction[] = [];
+		for (const c of extraCommands) {
+			const action: IAction = {
+				class: undefined,
+				id: c.id,
+				enabled: true,
+				tooltip: c.tooltip || '',
+				label: c.title,
+				run: (event) => {
+					return this._commandService.executeCommand(c.id, ...(c.arguments ?? []));
+				},
+			};
+			// TODO this is a hack just to make the feedback action more visible.
+			if (c.title.toLowerCase().indexOf('feedback') !== -1) {
+				primaryExtraActions.push(action);
+			} else {
+				secondaryExtraActions.push(action);
+			}
+		}
+
+		this._toolbar.setAdditionalPrimaryActions(primaryExtraActions);
+		this._toolbar.setAdditionalSecondaryActions(secondaryExtraActions);
 	}));
 
 	private readonly _previewTextModel = this._register(this._instantiationService.createInstance(
@@ -434,8 +492,9 @@ export class InlineEditsView extends Disposable {
 			const state = this._uiState.read(reader);
 			const edit1 = this._previewEditorLayoutInfo.read(reader)?.edit1;
 			if (!edit1 || !state) { return undefined; }
-			return { editTopLeft: edit1, showAlways: state.state === 'collapsed' };
+			return { editTopLeft: edit1, showAlways: state.state === 'collapsed' || state.state === 'inline' };
 		}),
+		this._model,
 	));
 }
 

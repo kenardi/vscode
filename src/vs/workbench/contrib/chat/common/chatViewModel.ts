@@ -28,7 +28,7 @@ export function isResponseVM(item: unknown): item is IChatResponseViewModel {
 	return !!item && typeof (item as IChatResponseViewModel).setVote !== 'undefined';
 }
 
-export type IChatViewModelChangeEvent = IChatAddRequestEvent | IChangePlaceholderEvent | IChatSessionInitEvent | IChatSetCheckpointEvent | null;
+export type IChatViewModelChangeEvent = IChatAddRequestEvent | IChangePlaceholderEvent | IChatSessionInitEvent | IChatSetHiddenEvent | null;
 
 export interface IChatAddRequestEvent {
 	kind: 'addRequest';
@@ -42,8 +42,8 @@ export interface IChatSessionInitEvent {
 	kind: 'initialize';
 }
 
-export interface IChatSetCheckpointEvent {
-	kind: 'setCheckpoint';
+export interface IChatSetHiddenEvent {
+	kind: 'setHidden';
 }
 
 export interface IChatViewModel {
@@ -74,7 +74,7 @@ export interface IChatRequestViewModel {
 	readonly contentReferences?: ReadonlyArray<IChatContentReference>;
 	readonly workingSet?: ReadonlyArray<URI>;
 	readonly confirmation?: string;
-	readonly isDisabled?: boolean;
+	readonly isHidden: boolean;
 	readonly isCompleteAddedRequest: boolean;
 }
 
@@ -177,7 +177,7 @@ export interface IChatResponseViewModel {
 	readonly errorDetails?: IChatResponseErrorDetails;
 	readonly result?: IChatAgentResult;
 	readonly contentUpdateTimings?: IChatLiveUpdateData;
-	readonly isDisabled: boolean;
+	readonly isHidden: boolean;
 	readonly isCompleteAddedRequest: boolean;
 	renderData?: IChatResponseRenderData;
 	currentRenderedHeight: number | undefined;
@@ -277,7 +277,7 @@ export class ChatViewModel extends Disposable implements IChatViewModel {
 			const modelEventToVmEvent: IChatViewModelChangeEvent =
 				e.kind === 'addRequest' ? { kind: 'addRequest' }
 					: e.kind === 'initialize' ? { kind: 'initialize' }
-						: e.kind === 'setCheckpoint' ? { kind: 'setCheckpoint' }
+						: e.kind === 'setHidden' ? { kind: 'setHidden' }
 							: null;
 			this._onDidChange.fire(modelEventToVmEvent);
 		}));
@@ -296,7 +296,7 @@ export class ChatViewModel extends Disposable implements IChatViewModel {
 	}
 
 	getItems(): (IChatRequestViewModel | IChatResponseViewModel)[] {
-		return [...this._items];
+		return [...this._items].filter((item) => !item.isHidden);
 	}
 
 	override dispose() {
@@ -374,12 +374,12 @@ export class ChatRequestViewModel implements IChatRequestViewModel {
 		return this._model.confirmation;
 	}
 
-	get isDisabled() {
-		return this._model.isDisabled;
-	}
-
 	get isCompleteAddedRequest() {
 		return this._model.isCompleteAddedRequest;
+	}
+
+	get isHidden() {
+		return this._model.isHidden;
 	}
 
 	currentRenderedHeight: number | undefined;
@@ -471,8 +471,8 @@ export class ChatResponseViewModel extends Disposable implements IChatResponseVi
 		return this._model.isCanceled;
 	}
 
-	get isDisabled() {
-		return this._model.isDisabled;
+	get isHidden() {
+		return this._model.isHidden;
 	}
 
 	get isCompleteAddedRequest() {
